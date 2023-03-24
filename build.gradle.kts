@@ -17,4 +17,12 @@ dependencies {
     implementation("org.jetbrains:annotations:23.0.0")
     compileOnly("org.projectlombok:lombok:1.18.24")
     annotationProcessor("org.projectlombok:lombok:1.18.24")
+    // test
+    testCompileOnly("org.projectlombok:lombok:1.18.24")
+    testAnnotationProcessor("org.projectlombok:lombok:1.18.24")
+    testImplementation("org.assertj:assertj-core:3.22.0")
+    testImplementation("org.awaitility:awaitility:4.2.0")
+    testAnnotationProcessor("org.projectlombok:lombok:1.18.24")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.9.2")
+
 }
