@@ -101,13 +101,6 @@ class Permits {
 		 * release permit. it could be call multiple times, but only release one permit.
 		 */
 		void release();
-
-		/**
-		 * subscribe context
-		 *
-		 * @return context
-		 */
-		C getContext();
 	}
 
 	/**
@@ -121,12 +114,5 @@ class Permits {
 		 * control release once only.
 		 */
 		protected final AtomicBoolean once = new AtomicBoolean();
-
-		/**
-		 * context
-		 */
-		@Getter
-		@Setter
-		C context;
 	}
 }

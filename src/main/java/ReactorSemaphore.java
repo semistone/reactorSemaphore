@@ -200,7 +200,6 @@ public class ReactorSemaphore {
 		 * @return is subscribed
 		 */
 		public boolean subscribe(Permits.Permit<ContextView> permitLock) {
-			((Permits.PermitImpl<ContextView>) permitLock).setContext(context);
 			Mono<E> mono;
 			try {
 				mono = sourcePublisher.apply(permitLock);
