@@ -49,6 +49,7 @@ public class ReactorSemaphore {
 	 */
 	private final LockFreeWaitingQueue queue;
 
+	private final Scheduler scheduler;
 	/**
 	 * Creates a {@code ReactorSemaphore} with the given number of permits.
 	 *
@@ -56,8 +57,8 @@ public class ReactorSemaphore {
 	 *            the initial number of permits available.
 	 */
 	public ReactorSemaphore(int permits) {
-		Scheduler scheduler = Schedulers.boundedElastic();
-		this.queue = new LockFreeWaitingQueue(new Permits(permits), scheduler);
+		this.scheduler = Schedulers.boundedElastic();
+		this.queue = new LockFreeWaitingQueue(new Permits(permits));
 	}
 
 	/**
@@ -71,7 +72,7 @@ public class ReactorSemaphore {
 	 */
 	public <T> Mono<T> acquire(Function<Permits.Permit<ContextView>, Mono<T>> monoFun) {
 		// sink
-		SinkPublisher<T> sinkPublisher = new SinkPublisher<>(monoFun, queue);
+		SinkPublisher<T> sinkPublisher = new SinkPublisher<>(monoFun, queue, scheduler);
 		return Mono.from(sinkPublisher);
 	}
 
@@ -112,6 +113,7 @@ public class ReactorSemaphore {
 		 */
 		private final LockFreeWaitingQueue queue;
 
+		private final Scheduler scheduler;
 		@Override
 		public void subscribe(Subscriber<? super T> subscriber) {
 			CoreSubscriber<T> coreSubscriber = (CoreSubscriber<T>)subscriber;
@@ -124,7 +126,9 @@ public class ReactorSemaphore {
 			final AtomicReference<SubscribeTask<T>> doSubscribeRef = new AtomicReference<>();
 			targetPublisher.asMono().doOnSubscribe(s -> {
 				doSubscribeRef.set(new SubscribeTask<>(sourcePublisherSupplier, targetPublisher, context,
-						isSubscriptionCancelled, queue::trySuccessor));
+						isSubscriptionCancelled, () ->
+					scheduler.schedule(queue::trySuccessor)
+				));
 				log.debug("add into queue");
 				// add subscribe tasks into queue
 				queue.add(doSubscribeRef.get());
@@ -193,11 +197,9 @@ public class ReactorSemaphore {
 		 * @param permitLock
 		 *            permit lock, must call release after subscribe finished or
 		 *            canceled.
-		 * @param scheduler
-		 *            subscribe scheduler
 		 * @return is subscribed
 		 */
-		public boolean subscribe(Permits.Permit<ContextView> permitLock, Scheduler scheduler) {
+		public boolean subscribe(Permits.Permit<ContextView> permitLock) {
 			((Permits.PermitImpl<ContextView>) permitLock).setContext(context);
 			Mono<E> mono;
 			try {
@@ -213,7 +215,7 @@ public class ReactorSemaphore {
 			 */
 			AtomicBoolean hasValue = new AtomicBoolean();
 			// subscribe mono and pass value/error to target sink publisher.
-			disposable = mono.subscribeOn(scheduler).doOnCancel(() -> unparkSuccessor(permitLock))
+			disposable = mono.doOnCancel(() -> unparkSuccessor(permitLock))
 					.doAfterTerminate(() -> unparkSuccessor(permitLock)).contextWrite(context).subscribe(e -> {
 						hasValue.set(true);
 						targetSink.emitValue(e, emitFailureHandler);
@@ -245,6 +247,8 @@ public class ReactorSemaphore {
 		private void unparkSuccessor(Permits.Permit<ContextView> releasePermit) {
 			releasePermit.release();
 			// try to run emit next queued sink.
+
+
 			trySuccessor.run();
 		}
 

@@ -26,3 +26,7 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter:5.9.2")
 
 }
+//For junit5
+tasks.named<Test>("test") {
+    useJUnitPlatform()
+}

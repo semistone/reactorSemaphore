@@ -31,10 +31,6 @@ class LockFreeWaitingQueue {
 	 */
 	@Getter
 	private final Permits permits;
-	/**
-	 * scheduler, default is {@link Schedulers#boundedElastic()}
-	 */
-	private final Scheduler scheduler;
 
 	/**
 	 * tasks add counter. to judge empty queue as atomic operation.
@@ -50,8 +46,8 @@ class LockFreeWaitingQueue {
 		// retry until can't get permit or
 		// get permit and after release permit but queue is empty.
 		//
+		int taskIndex = taskCount.get();
 		while (retry) {
-			int taskIndex = taskCount.get();
 			Optional<Permits.Permit<ContextView>> optionalReleasePermit = permits.tryAcquire();
 			if (optionalReleasePermit.isEmpty()) {
 				// can't get permit, return immediately.
@@ -62,7 +58,7 @@ class LockFreeWaitingQueue {
 			if (doSubscribeMono != null) {
 				// do next subscribe
 				log.debug("subscribe next");
-				doSubscribeMono.subscribe(releasePermit, scheduler);
+				doSubscribeMono.subscribe(releasePermit);
 			} else {
 				// no next mono, release permit immediately.
 				log.debug("no more task");
@@ -73,7 +69,9 @@ class LockFreeWaitingQueue {
 				// retry here.
 				// + ............ add task -> lock fail
 				// if task count doesn't change and poll nothing, then it's still empty queue
-				retry = taskIndex != taskCount.get();
+				int tmp = taskCount.get();
+				retry = taskIndex != tmp;
+				taskIndex = tmp;
 			}
 		}
 	}
