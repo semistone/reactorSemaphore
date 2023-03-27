@@ -10,6 +10,7 @@ import org.reactivestreams.Subscriber;
 import reactor.core.CoreSubscriber;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.MonoSink;
 import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Scheduler;
@@ -64,16 +65,33 @@ public class ReactorSemaphore {
 	/**
 	 * Acquires permit from this semaphore <br>
 	 * 
-	 * @param monoFun
+	 * @param sourcePublisherSupplier
 	 *            source mono supplier
 	 * @param <T>
 	 *            type of mono
 	 * @return synchronized mono
 	 */
-	public <T> Mono<T> acquire(Function<Permits.Permit<ContextView>, Mono<T>> monoFun) {
-		// sink
-		SinkPublisher<T> sinkPublisher = new SinkPublisher<>(monoFun, queue, scheduler);
-		return Mono.from(sinkPublisher);
+	public <T> Mono<T> acquire(Function<Permits.Permit<ContextView>, Mono<T>> sourcePublisherSupplier) {
+		return Mono.create(targetPublisher -> {
+			// each subscriber will assign a Sinks.One as target publisher
+			// and set into subscribe tasks
+			// cancel flag
+			AtomicBoolean isSubscriptionCancelled = new AtomicBoolean();
+
+			log.debug("add into queue");
+			// add subscribe tasks into queue
+			SubscribeTask<T> task = new SubscribeTask<>(sourcePublisherSupplier, targetPublisher, targetPublisher.contextView(),
+					isSubscriptionCancelled, () ->
+					scheduler.schedule(queue::trySuccessor)
+			);
+			queue.add(task);
+			targetPublisher.onCancel(() -> {
+				isSubscriptionCancelled.set(true);
+				// remove subscribe tasks from queue
+				queue.remove(task);
+			});
+		});
+
 	}
 
 	/**
@@ -94,59 +112,6 @@ public class ReactorSemaphore {
 		return this.queue.getPermits().getAvailablePermits();
 	}
 
-	/**
-	 * sink publisher <br>
-	 * one subscribe mapping to one {@link Sinks#one()} and pass subscriber to it.
-	 *
-	 * @param <T>
-	 *            type of publisher
-	 */
-	@RequiredArgsConstructor
-	private static class SinkPublisher<T> implements Publisher<T> {
-		/**
-		 * source publisher supplier
-		 */
-		private final Function<Permits.Permit<ContextView>, Mono<T>> sourcePublisherSupplier;
-
-		/**
-		 * waiting queue
-		 */
-		private final LockFreeWaitingQueue queue;
-
-		private final Scheduler scheduler;
-		@Override
-		public void subscribe(Subscriber<? super T> subscriber) {
-			CoreSubscriber<T> coreSubscriber = (CoreSubscriber<T>)subscriber;
-			Context context = coreSubscriber.currentContext();
-			// each subscriber will assign a Sinks.One as target publisher
-			// and set into subscribe tasks
-			Sinks.One<T> targetPublisher = Sinks.one();
-			// cancel flag
-			AtomicBoolean isSubscriptionCancelled = new AtomicBoolean();
-			final AtomicReference<SubscribeTask<T>> doSubscribeRef = new AtomicReference<>();
-			targetPublisher.asMono().doOnSubscribe(s -> {
-				doSubscribeRef.set(new SubscribeTask<>(sourcePublisherSupplier, targetPublisher, context,
-						isSubscriptionCancelled, () ->
-					scheduler.schedule(queue::trySuccessor)
-				));
-				log.debug("add into queue");
-				// add subscribe tasks into queue
-				queue.add(doSubscribeRef.get());
-
-			}).doOnCancel(() -> {
-				isSubscriptionCancelled.set(true);
-				SubscribeTask<T> doSubscribe = doSubscribeRef.get();
-				if (doSubscribe == null) {
-					log.debug("cancel before subscribe");
-					queue.trySuccessor();
-					return;
-				}
-				// remove subscribe tasks from queue
-				queue.remove(doSubscribe);
-			}).subscribe(coreSubscriber);
-		}
-
-	}
 
 	/**
 	 * subscribe task
@@ -164,7 +129,7 @@ public class ReactorSemaphore {
 		/**
 		 * target publisher
 		 */
-		private final Sinks.One<E> targetSink;
+		private final MonoSink<E> targetSink;
 
 		/**
 		 * reactor context
@@ -187,47 +152,30 @@ public class ReactorSemaphore {
 		private Disposable disposable;
 
 		/**
-		 * emit error handler
-		 */
-		private final MyEmitFailureHandler emitFailureHandler = new MyEmitFailureHandler();
-
-		/**
 		 * do subscribe
 		 * 
 		 * @param permitLock
 		 *            permit lock, must call release after subscribe finished or
 		 *            canceled.
-		 * @return is subscribed
 		 */
-		public boolean subscribe(Permits.Permit<ContextView> permitLock) {
+		public void subscribe(Permits.Permit<ContextView> permitLock) {
 			Mono<E> mono;
 			try {
 				mono = sourcePublisher.apply(permitLock);
 			} catch (Exception e) {
 				log.warn("get source publisher fail", e);
-				targetSink.emitError(e, emitFailureHandler);
+				targetSink.error(e);
 				permitLock.release();
-				return false;
+				return;
 			}
-			/*
-			 * this mono has value or empty, if empty then need to emit empty event.
-			 */
-			AtomicBoolean hasValue = new AtomicBoolean();
 			// subscribe mono and pass value/error to target sink publisher.
 			disposable = mono.doOnCancel(() -> unparkSuccessor(permitLock))
-					.doAfterTerminate(() -> unparkSuccessor(permitLock)).contextWrite(context).subscribe(e -> {
-						hasValue.set(true);
-						targetSink.emitValue(e, emitFailureHandler);
-					}, ex -> targetSink.emitError(ex, emitFailureHandler), () -> {
-						if (!hasValue.get()) {
-							targetSink.emitEmpty(emitFailureHandler);
-						}
-					});
+					.doAfterTerminate(() -> unparkSuccessor(permitLock)).contextWrite(context).subscribe(targetSink::success,
+							targetSink::error, targetSink::success);
 			// call dispose before set disposable into this.
 			if (isCancelled.get() && !disposable.isDisposed()) {
 				disposable.dispose();
 			}
-			return true;
 		}
 
 		/**
@@ -246,21 +194,9 @@ public class ReactorSemaphore {
 		private void unparkSuccessor(Permits.Permit<ContextView> releasePermit) {
 			releasePermit.release();
 			// try to run emit next queued sink.
-
-
 			trySuccessor.run();
 		}
 
 	}
 
-	/**
-	 * simple error handler
-	 */
-	private static class MyEmitFailureHandler implements Sinks.EmitFailureHandler {
-		@Override
-		public boolean onEmitFailure(@NotNull SignalType signalType, Sinks.@NotNull EmitResult emitResult) {
-			log.warn("emit fail signal type {}", signalType);
-			return false;
-		}
-	}
 }
