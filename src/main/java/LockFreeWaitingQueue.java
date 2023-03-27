@@ -1,12 +1,8 @@
-import java.util.Optional;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import reactor.core.scheduler.Scheduler;
-import reactor.core.scheduler.Schedulers;
-import reactor.util.context.ContextView;
 /**
  * Lock free waiting queue. <br>
  * After {@link LockFreeWaitingQueue#add(ReactorSemaphore.SubscribeTask)}, it
@@ -25,7 +21,7 @@ class LockFreeWaitingQueue {
 	/**
 	 * waiting queue which wait acquired permit then do subscribe.
 	 */
-	private final java.util.Queue<ReactorSemaphore.SubscribeTask<?>> subscribeQueue = new ConcurrentLinkedQueue<>();
+	private final java.util.Queue<ReactorSemaphore.SubscribeTask> subscribeQueue = new ConcurrentLinkedQueue<>();
 	/**
 	 * permits
 	 */
@@ -48,21 +44,20 @@ class LockFreeWaitingQueue {
 		//
 		int taskIndex = taskCount.get();
 		while (retry) {
-			Optional<Permits.Permit<ContextView>> optionalReleasePermit = permits.tryAcquire();
-			if (optionalReleasePermit.isEmpty()) {
+			boolean acquire = permits.tryAcquire();
+			if (!acquire) {
 				// can't get permit, return immediately.
 				return;
 			}
-			Permits.Permit<ContextView> releasePermit = optionalReleasePermit.get();
-			ReactorSemaphore.SubscribeTask<?> doSubscribeMono = subscribeQueue.poll();
+			ReactorSemaphore.SubscribeTask doSubscribeMono = subscribeQueue.poll();
 			if (doSubscribeMono != null) {
 				// do next subscribe
 				log.debug("subscribe next");
-				doSubscribeMono.subscribe(releasePermit);
+				doSubscribeMono.subscribe();
 			} else {
 				// no next mono, release permit immediately.
 				log.debug("no more task");
-				releasePermit.release();
+				permits.release();
 
 				// after release permit, need to check queue again to prevent
 				// | lock -> no task -> ............ release -> *need to check empty again and
@@ -82,7 +77,7 @@ class LockFreeWaitingQueue {
 	 * @param doSubscribe
 	 *            do subscribe.
 	 */
-	void add(ReactorSemaphore.SubscribeTask<?> doSubscribe) {
+	void add(ReactorSemaphore.SubscribeTask doSubscribe) {
 		// need to add queue, then increase count.
 		// |empty queue -> release lock -> not empty -> try acquire permit
 		// +............add queue -> increase cnt ...-> try acquire permit
@@ -103,14 +98,11 @@ class LockFreeWaitingQueue {
 	 * @param subscribeTask
 	 *            subscribe task
 	 */
-	void remove(ReactorSemaphore.SubscribeTask<?> subscribeTask) {
-		if (!subscribeQueue.remove(subscribeTask)) {
-			// not in queue, then dispose subscription.
-			subscribeTask.dispose();
-		} else {
+	void remove(ReactorSemaphore.SubscribeTask subscribeTask) {
+		if(subscribeQueue.remove(subscribeTask)){
 			// removed from queue and try next.
+			subscribeTask.subscribe();
 			log.debug("subscription cancelled, remove from queue");
-			trySuccessor();
 		}
 	}
 

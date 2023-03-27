@@ -1,10 +1,6 @@
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import lombok.Getter;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import reactor.util.context.ContextView;
 
 /**
  * Permits
@@ -36,25 +32,9 @@ class Permits {
 		this.availablePermits = new AtomicInteger(availablePermits);
 	}
 
-	/**
-	 * Acquires a permit from this semaphore, only if one is available at the time
-	 * of invocation.
-	 *
-	 * @return {@link Permits.Permit} or empty if acquire failure.
-	 */
-	public Optional<Permits.Permit<ContextView>> tryAcquire() {
-		if (doAcquire()) {
-			return Optional.of(new Permits.PermitImpl<>() {
-				@Override
-				public void release() {
-					if (once.compareAndSet(false, true)) {
-						doRelease();
-					}
-				}
-			});
-		} else {
-			return Optional.empty();
-		}
+
+	public void release() {
+		this.availablePermits.incrementAndGet();
 	}
 
 	/**
@@ -62,7 +42,7 @@ class Permits {
 	 *
 	 * @return success acquire permit or not.
 	 */
-	private boolean doAcquire() {
+	public boolean tryAcquire() {
 		AtomicBoolean isAcquired = new AtomicBoolean();
 		int remain = availablePermits.updateAndGet(p -> {
 			if (p > 0) {
@@ -83,20 +63,10 @@ class Permits {
 	}
 
 	/**
-	 * release permit
-	 */
-	private void doRelease() {
-		int remain = availablePermits.incrementAndGet();
-		log.debug("release permit remain {}", remain);
-	}
-
-	/**
 	 * Permit lock
 	 *
-	 * @param <C>
-	 *            type of context
 	 */
-	public interface Permit<C> {
+	public interface Permit {
 		/**
 		 * release permit. it could be call multiple times, but only release one permit.
 		 */
@@ -105,11 +75,8 @@ class Permits {
 
 	/**
 	 * simple permit implementation.
-	 * 
-	 * @param <C>
-	 *            type of context
 	 */
-	abstract static class PermitImpl<C> implements Permit<C> {
+	abstract static class PermitImpl implements Permit {
 		/**
 		 * control release once only.
 		 */

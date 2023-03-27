@@ -3,13 +3,11 @@ import static org.awaitility.Awaitility.await;
 import static org.hamcrest.core.Is.is;
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import reactor.util.context.ContextView;
 
 class PermitsTest {
 
@@ -22,9 +20,9 @@ class PermitsTest {
 			CompletableFuture.runAsync(() -> {
 				boolean retry = true;
 				while (retry) {
-					Optional<Permits.Permit<ContextView>> lock = permits.tryAcquire();
-					if (lock.isPresent()) {
-						lock.get().release();
+					boolean acquire = permits.tryAcquire();
+					if (acquire) {
+						permits.release();
 						finish.incrementAndGet();
 						retry = false;
 					}

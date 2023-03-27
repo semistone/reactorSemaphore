@@ -1,22 +1,14 @@
 
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.jetbrains.annotations.NotNull;
-import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
-import reactor.core.CoreSubscriber;
-import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoSink;
-import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
-import reactor.util.context.Context;
-import reactor.util.context.ContextView;
 
 /**
  * Reactor Semaphore Acquire permit when mono been subscribed and release permit
@@ -51,6 +43,7 @@ public class ReactorSemaphore {
 	private final LockFreeWaitingQueue queue;
 
 	private final Scheduler scheduler;
+	private final Permits permits;
 	/**
 	 * Creates a {@code ReactorSemaphore} with the given number of permits.
 	 *
@@ -59,19 +52,51 @@ public class ReactorSemaphore {
 	 */
 	public ReactorSemaphore(int permits) {
 		this.scheduler = Schedulers.boundedElastic();
-		this.queue = new LockFreeWaitingQueue(new Permits(permits));
+		this.permits =new Permits(permits);
+		this.queue = new LockFreeWaitingQueue(this.permits);
+	}
+
+	public <T> Mono<T> acquire(Function<Permits.Permit, Mono<T>> sourcePublisherSupplier) {
+		return acquire().flatMap(b -> {
+			Permits.PermitImpl permit = new Permits.PermitImpl() {
+				@Override
+				public void release() {
+					if (once.compareAndSet(false, true)) {
+						permits.release();
+					}
+				}
+			};
+			if (Boolean.FALSE.equals(b)) {
+				Mono<T> empty = Mono.empty();
+				return unparkSuccessor(permit, empty);
+			}
+			try {
+				return unparkSuccessor(permit, sourcePublisherSupplier.apply(permit));
+			} catch (Exception e) {
+				return unparkSuccessor(permit, Mono.error(e));
+			}
+		});
+	}
+
+	private <T> Mono<T> unparkSuccessor(Permits.Permit releasePermit, Mono<T> mono) {
+		return mono.doOnCancel(() -> unparkSuccessor(releasePermit))
+				.doAfterTerminate(() -> unparkSuccessor(releasePermit));
 	}
 
 	/**
+	 * release permit and try next
+	 */
+	private void unparkSuccessor(Permits.Permit releasePermit) {
+		releasePermit.release();
+		// try to run emit next queued sink.
+		this.scheduler.schedule(this.queue::trySuccessor);
+	}
+	/**
 	 * Acquires permit from this semaphore <br>
 	 * 
-	 * @param sourcePublisherSupplier
-	 *            source mono supplier
-	 * @param <T>
-	 *            type of mono
 	 * @return synchronized mono
 	 */
-	public <T> Mono<T> acquire(Function<Permits.Permit<ContextView>, Mono<T>> sourcePublisherSupplier) {
+	public Mono<Boolean> acquire() {
 		return Mono.create(targetPublisher -> {
 			// each subscriber will assign a MonoSink as target publisher
 			// and set into subscribe tasks
@@ -80,10 +105,8 @@ public class ReactorSemaphore {
 
 			log.debug("add into queue");
 			// add subscribe tasks into queue
-			SubscribeTask<T> task = new SubscribeTask<>(sourcePublisherSupplier, targetPublisher, targetPublisher.contextView(),
-					isSubscriptionCancelled, () ->
-					scheduler.schedule(queue::trySuccessor)
-			);
+			SubscribeTask task = new SubscribeTask(targetPublisher,
+					isSubscriptionCancelled);
 			queue.add(task);
 			targetPublisher.onCancel(() -> {
 				isSubscriptionCancelled.set(true);
@@ -115,88 +138,29 @@ public class ReactorSemaphore {
 
 	/**
 	 * subscribe task
-	 * 
-	 * @param <E>
-	 *            type of publisher
+	 *
 	 */
 	@RequiredArgsConstructor
-	static class SubscribeTask<E> {
-		/**
-		 * source publisher
-		 */
-		private final Function<Permits.Permit<ContextView>, Mono<E>> sourcePublisher;
-
+	static class SubscribeTask {
 		/**
 		 * target publisher
 		 */
-		private final MonoSink<E> targetSink;
-
-		/**
-		 * reactor context
-		 */
-		private final ContextView context;
+		private final MonoSink<Boolean> targetSink;
 
 		/**
 		 * is cancelled
 		 */
 		private final AtomicBoolean isCancelled;
 
-		/**
-		 * do next
-		 */
-		private final Runnable trySuccessor;
-
-		/**
-		 * subscription disposable
-		 */
-		private Disposable disposable;
 
 		/**
 		 * do subscribe
-		 * 
-		 * @param permitLock
-		 *            permit lock, must call release after subscribe finished or
-		 *            canceled.
+		 *
 		 */
-		public void subscribe(Permits.Permit<ContextView> permitLock) {
-			Mono<E> mono;
-			try {
-				mono = sourcePublisher.apply(permitLock);
-			} catch (Exception e) {
-				log.warn("get source publisher fail", e);
-				targetSink.error(e);
-				permitLock.release();
-				return;
-			}
+		public void subscribe() {
 			// subscribe mono and pass value/error to target sink publisher.
-			disposable = mono.doOnCancel(() -> unparkSuccessor(permitLock))
-					.doAfterTerminate(() -> unparkSuccessor(permitLock)).contextWrite(context).subscribe(targetSink::success,
-							targetSink::error, targetSink::success);
-			// call dispose before set disposable into this.
-			if (isCancelled.get() && !disposable.isDisposed()) {
-				disposable.dispose();
-			}
+			targetSink.success(!isCancelled.get());
 		}
-
-		/**
-		 * dispose subscription
-		 */
-		public void dispose() {
-			if (disposable != null && !disposable.isDisposed()) {
-				log.debug("subscription cancelled, call dispose");
-				disposable.dispose();
-			}
-		}
-
-		/**
-		 * release permit and try next
-		 */
-		private void unparkSuccessor(Permits.Permit<ContextView> releasePermit) {
-			releasePermit.release();
-			// try to run emit next queued sink.
-			trySuccessor.run();
-		}
-
 	}
 
 }
