@@ -73,7 +73,7 @@ public class ReactorSemaphore {
 	 */
 	public <T> Mono<T> acquire(Function<Permits.Permit<ContextView>, Mono<T>> sourcePublisherSupplier) {
 		return Mono.create(targetPublisher -> {
-			// each subscriber will assign a Sinks.One as target publisher
+			// each subscriber will assign a MonoSink as target publisher
 			// and set into subscribe tasks
 			// cancel flag
 			AtomicBoolean isSubscriptionCancelled = new AtomicBoolean();
