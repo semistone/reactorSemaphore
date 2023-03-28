@@ -123,6 +123,10 @@ public class ReactorSemaphore {
 		return acquire().timeout(Duration.ofNanos(unit.toNanos(timeout))).onErrorReturn(false);
 	}
 
+	public void release() {
+		permits.release();
+	}
+
 	/**
 	 * Returns an estimate of the number of monos waiting to acquire
 	 * 

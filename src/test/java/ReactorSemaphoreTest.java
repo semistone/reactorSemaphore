@@ -6,6 +6,7 @@ import static org.hamcrest.core.Is.is;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
@@ -184,5 +185,24 @@ class ReactorSemaphoreTest {
 		ReactorSemaphore semaphore = new ReactorSemaphore(1);
 		Assertions.assertThat(semaphore.acquire().block()).isTrue();
 		Assertions.assertThat(semaphore.tryAcquire(1, TimeUnit.SECONDS).block()).isFalse();
+	}
+
+
+	@Test
+	void testTimeout() {
+		ReactorSemaphore semaphore = new ReactorSemaphore(1);
+		Assertions.assertThat(semaphore.acquire().block()).isTrue();
+		// still in queue
+		Mono<String> test = semaphore.acquire(releaes -> Mono.just("test")).timeout(Duration.ofMillis(5));
+		Assertions.assertThatThrownBy(test::block).hasCauseExactlyInstanceOf(TimeoutException.class);
+		// not in queue
+		semaphore.release();
+		Assertions.assertThat(semaphore.availablePermits()).isEqualTo(1);
+		test = semaphore.acquire(releaes -> Mono.just("test").delayElement(Duration.ofSeconds(5)))
+				.timeout(Duration.ofMillis(50));
+		Assertions.assertThatThrownBy(test::block).hasCauseExactlyInstanceOf(TimeoutException.class);
+		// permit still one
+		Assertions.assertThat(semaphore.availablePermits()).isEqualTo(1);
+
 	}
 }
