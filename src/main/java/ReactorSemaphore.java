@@ -119,6 +119,10 @@ public class ReactorSemaphore {
 
 	}
 
+	public boolean tryAcquire() {
+		return permits.tryAcquire();
+	}
+
 	public Mono<Boolean> tryAcquire(long timeout, TimeUnit unit) {
 		return acquire().timeout(Duration.ofNanos(unit.toNanos(timeout))).onErrorReturn(false);
 	}

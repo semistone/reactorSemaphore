@@ -181,7 +181,7 @@ class ReactorSemaphoreTest {
 	}
 
 	@Test
-	void testTryAcquire() {
+	void testTryAcquireWithTimeout() {
 		ReactorSemaphore semaphore = new ReactorSemaphore(1);
 		Assertions.assertThat(semaphore.acquire().block()).isTrue();
 		Assertions.assertThat(semaphore.tryAcquire(1, TimeUnit.SECONDS).block()).isFalse();
@@ -204,5 +204,12 @@ class ReactorSemaphoreTest {
 		// permit still one
 		Assertions.assertThat(semaphore.availablePermits()).isEqualTo(1);
 
+	}
+
+	@Test
+	void testTryAcquire() {
+		ReactorSemaphore semaphore = new ReactorSemaphore(1);
+		Assertions.assertThat(semaphore.tryAcquire()).isTrue();
+		Assertions.assertThat(semaphore.tryAcquire()).isFalse();
 	}
 }
