@@ -5,6 +5,7 @@ import static org.hamcrest.core.Is.is;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
@@ -176,5 +177,12 @@ class ReactorSemaphoreTest {
 			return Mono.just("test").delayElement(Duration.ofSeconds(100));
 		}).subscribe();
 		Assertions.assertThat(semaphore.acquire(lock -> Mono.just("test")).block()).isEqualTo("test");
+	}
+
+	@Test
+	void testTryAcquire() {
+		ReactorSemaphore semaphore = new ReactorSemaphore(1);
+		Assertions.assertThat(semaphore.acquire().block()).isTrue();
+		Assertions.assertThat(semaphore.tryAcquire(1, TimeUnit.SECONDS).block()).isFalse();
 	}
 }

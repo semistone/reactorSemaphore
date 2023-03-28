@@ -1,4 +1,6 @@
 
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
@@ -115,6 +117,10 @@ public class ReactorSemaphore {
 			});
 		});
 
+	}
+
+	public Mono<Boolean> tryAcquire(long timeout, TimeUnit unit) {
+		return acquire().timeout(Duration.ofNanos(unit.toNanos(timeout))).onErrorReturn(false);
 	}
 
 	/**
